@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { MessageCircle, PenTool, Users } from 'lucide-react'
 
 export default function WelcomePage() {
-    const { data: session } = useSession()
+    const { data: session } = useSession() ?? {};
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 pt-20">
