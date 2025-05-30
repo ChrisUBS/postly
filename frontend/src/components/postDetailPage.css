@@ -1,0 +1,45 @@
+/* File: markdown-styles.css */
+
+.markdown-content {
+    /* Ensures that line breaks are respected */
+    /* white-space: pre-wrap; */
+  }
+  
+  .markdown-content p {
+    /* Keeps paragraphs properly spaced */
+    margin-bottom: 0.5em;
+    line-height: 1.6;
+  }
+  
+  /* Adds space between list items */
+  .markdown-content ul,
+  .markdown-content ol {
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+  }
+  
+  /* Ensures that list items have space between them */
+  .markdown-content li {
+    margin-bottom: 0.5em;
+  }
+  
+  /* Adjust the space between titles and content */
+  .markdown-content h1,
+  .markdown-content h2,
+  .markdown-content h3,
+  .markdown-content h4,
+  .markdown-content h5,
+  .markdown-content h6 {
+    margin-top: 1em;
+    margin-bottom: 0.5em;
+    font-size:x-large;
+  }
+  
+  /* For code blocks */
+  .markdown-content pre {
+    white-space: pre;
+    overflow-x: auto;
+    padding: 1em;
+    border-radius: 0.375em;
+    margin: 1em 0;
+  }
