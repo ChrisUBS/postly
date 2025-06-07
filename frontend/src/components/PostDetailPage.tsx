@@ -310,7 +310,7 @@ export default function PostDetailPage() {
                                     value={newComment}
                                     onChange={(e) => setNewComment(e.target.value)}
                                     className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                    placeholder="Escribe un comentario..."
+                                    placeholder="Write a comment..."
                                     rows={3}
                                     required
                                 ></textarea>

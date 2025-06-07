@@ -33,7 +33,7 @@ export default function Navbar() {
                         <span className="text-2xl font-bold text-gray-800">Postly</span>
                     </Link>
 
-                    {/* Menú de Navegación */}
+                    {/* Navigation menu */}
                     <div className="flex items-center space-x-6">
                         <Link
                             href="/"
@@ -61,17 +61,17 @@ export default function Navbar() {
                             </Link>
                         )}
 
-                        {/* Barra de búsqueda */}
+                        {/* Search bar */}
                         <SearchBar />
 
-                        {/* Perfil o Inicio de Sesión */}
+                        {/* Profile or login */}
                         {session ? (
                             <div className="flex items-center space-x-3">
                                 <Link href="/profile" className="flex items-center space-x-2">
                                     {session.user?.image ? (
                                         <Image
                                             src={session.user.image}
-                                            alt="Perfil"
+                                            alt="Profile"
                                             width={36}
                                             height={36}
                                             className="rounded-full"
@@ -79,7 +79,7 @@ export default function Navbar() {
                                     ) : session.user?.profilePicture ? (
                                         <Image
                                             src={session.user.profilePicture}
-                                            alt="Perfil"
+                                            alt="Profile"
                                             width={36}
                                             height={36}
                                             className="rounded-full"
@@ -169,7 +169,7 @@ export default function Navbar() {
                                         {session.user?.image ? (
                                             <Image
                                                 src={session.user.image}
-                                                alt="Perfil"
+                                                alt="Profile"
                                                 width={24}
                                                 height={24}
                                                 className="rounded-full"
@@ -177,7 +177,7 @@ export default function Navbar() {
                                         ) : session.user?.profilePicture ? (
                                             <Image
                                                 src={session.user.profilePicture}
-                                                alt="Perfil"
+                                                alt="Profile"
                                                 width={24}
                                                 height={24}
                                                 className="rounded-full"
