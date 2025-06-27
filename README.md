@@ -63,6 +63,9 @@ This is a blog-based social network project where users can view posts without n
    python server.py
    ```
 
+### Note
+Configure your .env files for the backend (.env.example) and frontend (.env.local.example), don't forget to remove ".example".
+
 ## Features
 
 - **Public Browsing**: Any user can view posts without logging in.
