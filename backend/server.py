@@ -9,6 +9,7 @@ from bson.objectid import ObjectId
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, create_access_token
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from werkzeug.security import generate_password_hash, check_password_hash
 load_dotenv()
 
 app = Flask(__name__)
@@ -110,6 +111,85 @@ def login():
         return {"accessToken": access_token, "user": user}, HTTPStatus.OK
     except Exception as e:
         return {"error": str(e)}, HTTPStatus.UNAUTHORIZED
+
+# Register with email and password
+@app.post("/api/auth/register")
+def register():
+    try:
+        data = request.get_json()
+        email = data.get("email")
+        password = data.get("password")
+        name = data.get("name", "")
+
+        if not email or not password:
+            return {"error": "Email and password are required"}, HTTPStatus.BAD_REQUEST
+
+        # Check if user already exists
+        existing = db.users.find_one({"email": email})
+        if existing:
+            return {"error": "User already exists"}, HTTPStatus.BAD_REQUEST
+
+        hashed_password = generate_password_hash(password)
+
+        new_user = {
+            "userId": str(ObjectId()),
+            "name": name,
+            "email": email,
+            "password": hashed_password,
+            "profilePicture": None,
+            "lastLogin": datetime.datetime.now(datetime.UTC).isoformat()
+        }
+
+        db.users.insert_one(new_user)
+
+        # Create JWT
+        token = create_access_token(identity=new_user["userId"])
+
+        return {
+            "accessToken": token,
+            "user": {
+                "userId": new_user["userId"],
+                "name": new_user["name"],
+                "email": new_user["email"]
+            }
+        }, HTTPStatus.CREATED
+
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
+
+# Login with email and password
+@app.post("/api/auth/login/email")
+def login_email():
+    try:
+        data = request.get_json()
+        email = data.get("email")
+        password = data.get("password")
+
+        if not email or not password:
+            return {"error": "Email and password are required"}, HTTPStatus.BAD_REQUEST
+
+        user = db.users.find_one({"email": email})
+        if not user:
+            return {"error": "Invalid credentials"}, HTTPStatus.UNAUTHORIZED
+
+        # Validate password
+        if not check_password_hash(user.get("password", ""), password):
+            return {"error": "Invalid credentials"}, HTTPStatus.UNAUTHORIZED
+
+        token = create_access_token(identity=user["userId"])
+
+        return {
+            "accessToken": token,
+            "user": {
+                "userId": user["userId"],
+                "name": user.get("name"),
+                "email": user["email"],
+                "profilePicture": user.get("profilePicture")
+            }
+        }, HTTPStatus.OK
+
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
 
 # GET (get all posts)
 @app.get("/api/posts")
