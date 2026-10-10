@@ -5,7 +5,9 @@ from config import db
 from flask_cors import CORS
 from dotenv import load_dotenv
 import os, datetime, re
+import requests
 from bson.objectid import ObjectId
+from google.oauth2 import service_account
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity, create_access_token
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -61,6 +63,114 @@ def create_slug(title):
 def calculate_read_time(content):
     words = len(content.split())
     return max(1, round(words / 200))  # Assuming 200 words per minute
+
+def send_push_notification(notification):
+    project_id = os.getenv("FIREBASE_PROJECT_ID")
+    service_account_file = os.getenv("FIREBASE_SERVICE_ACCOUNT_FILE")
+    if not project_id or not service_account_file:
+        return
+
+    device_tokens = list(db.device_tokens.find({
+        "userId": notification["recipientUserId"]
+    }))
+    if not device_tokens:
+        return
+
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            service_account_file,
+            scopes=["https://www.googleapis.com/auth/firebase.messaging"]
+        )
+        credentials.refresh(google_requests.Request())
+    except Exception:
+        app.logger.exception("Unable to authenticate with Firebase Cloud Messaging")
+        return
+
+    is_like = notification["type"] == "like"
+    title = "New like on your post" if is_like else "New comment on your post"
+    verb = "liked" if is_like else "commented on"
+    body = f'{notification["actorName"]} {verb} your post: {notification["postTitle"]}'
+    message_url = f"https://fcm.googleapis.com/v1/projects/{project_id}/messages:send"
+
+    for device in device_tokens:
+        payload = {
+            "message": {
+                "token": device["token"],
+                "notification": {"title": title, "body": body},
+                "data": {
+                    "type": notification["type"],
+                    "postId": notification["postId"],
+                    "notificationId": notification["_id"]
+                },
+                "android": {"priority": "HIGH"}
+            }
+        }
+        try:
+            response = requests.post(
+                message_url,
+                json=payload,
+                headers={"Authorization": f"Bearer {credentials.token}"},
+                timeout=8
+            )
+            if not response.ok:
+                try:
+                    error_payload = response.json().get("error", {})
+                except ValueError:
+                    error_payload = {}
+
+                details = error_payload.get("details", [])
+                token_is_unregistered = any(
+                    detail.get("errorCode") == "UNREGISTERED"
+                    for detail in details
+                    if isinstance(detail, dict)
+                )
+                if response.status_code == 404 and token_is_unregistered:
+                    db.device_tokens.delete_one({"_id": device["_id"]})
+                else:
+                    app.logger.warning(
+                        "FCM delivery failed with status %s: %s",
+                        response.status_code,
+                        response.text
+                    )
+        except requests.RequestException:
+            app.logger.exception("Unable to send push notification")
+
+
+# Save an in-app notification for the author of a post.
+def create_notification(recipient_user_id, actor, notification_type, post, comment_id=None):
+    if not recipient_user_id or recipient_user_id == actor.get("userId"):
+        return
+
+    notification = {
+        "recipientUserId": recipient_user_id,
+        "type": notification_type,
+        "actorName": actor.get("name", "Postly user"),
+        "postId": str(post["_id"]),
+        "postTitle": post.get("title", ""),
+        "createdAt": datetime.datetime.now(datetime.UTC).isoformat(),
+        "isRead": False
+    }
+    if comment_id:
+        notification["commentId"] = comment_id
+
+    try:
+        result = db.notifications.insert_one(notification)
+        notification["_id"] = str(result.inserted_id)
+        send_push_notification(notification)
+    except Exception:
+        # Do not fail a like or comment that was already saved if notification storage fails.
+        app.logger.exception("Unable to save %s notification", notification_type)
+
+
+def delete_notifications_for_post(post_id, comment_id=None):
+    query = {"postId": str(post_id)}
+    if comment_id:
+        query.update({"commentId": comment_id, "type": "comment"})
+    try:
+        db.notifications.delete_many(query)
+    except Exception:
+        # Notification cleanup must not turn a successful delete into an API error.
+        app.logger.exception("Unable to remove notifications for post %s", post_id)
 
 ##############################################
 ################ ENDPOINTS ###################
@@ -388,8 +498,9 @@ def delete_post(id):
         
         result = db.posts.delete_one({"_id": ObjectId(id)})
         if result.deleted_count:
-            # Also remove associated likes
+            # Also remove associated likes and notifications for the deleted post.
             db.post_likes.delete_many({"postId": id})
+            delete_notifications_for_post(id)
             return {"message": "Post deleted successfully"}, HTTPStatus.OK
         return {"error": "Post not found"}, HTTPStatus.NOT_FOUND
     except Exception as e:
@@ -439,6 +550,11 @@ def create_comment(post_id):
             "likes": 0
         }
         
+        # Load the post so the notification can be addressed to its author.
+        post = db.posts.find_one({"_id": ObjectId(post_id)})
+        if not post:
+            return {"error": "Post not found"}, HTTPStatus.NOT_FOUND
+
         # Add the comment to the post
         result = db.posts.update_one(
             {"_id": ObjectId(post_id)},
@@ -446,6 +562,9 @@ def create_comment(post_id):
         )
         
         if result.matched_count:
+            create_notification(
+                post.get("author", {}).get("userId"), user_data, "comment", post, comment["_id"]
+            )
             return jsonify(comment), HTTPStatus.CREATED
         return {"error": "Post not found"}, HTTPStatus.NOT_FOUND
     except Exception as e:
@@ -479,6 +598,7 @@ def delete_comment(post_id, comment_id):
         )
         
         if result.modified_count:
+            delete_notifications_for_post(post_id, comment_id)
             return {"message": "Comment deleted successfully"}, HTTPStatus.OK
         return {"error": "Comment not found"}, HTTPStatus.NOT_FOUND
     except Exception as e:
@@ -504,10 +624,14 @@ def like_post(post_id):
                 "createdAt": datetime.datetime.now(datetime.UTC).isoformat()
             })
             
-            # Increment likes counter
+            # Increment likes counter and notify the post author.
             db.posts.update_one(
                 {"_id": ObjectId(post_id)},
                 {"$inc": {"likes": 1}}
+            )
+            actor = get_user_data(user_id) or {"userId": user_id, "name": "Postly user"}
+            create_notification(
+                post.get("author", {}).get("userId"), actor, "like", post
             )
             
             return {"message": "Post liked successfully"}, HTTPStatus.OK
@@ -650,6 +774,104 @@ def get_my_posts():
         }
         
         return jsonify(response), HTTPStatus.OK
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
+
+# Get in-app notifications for the authenticated user.
+@app.get("/api/notifications")
+@jwt_required()
+def get_notifications():
+    try:
+        user_id = get_jwt_identity()
+        limit = max(1, min(int(request.args.get("limit", 50)), 100))
+        query = {"recipientUserId": user_id}
+        notifications = fix_ids(list(
+            db.notifications.find(query).sort("createdAt", -1).limit(limit)
+        ))
+        unread_count = db.notifications.count_documents({**query, "isRead": False})
+        return jsonify({
+            "notifications": notifications,
+            "unreadCount": unread_count
+        }), HTTPStatus.OK
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
+
+# Register an FCM token for the authenticated device.
+@app.post("/api/notifications/device-token")
+@jwt_required()
+def register_notification_device():
+    try:
+        data = request.get_json() or {}
+        token = data.get("token", "").strip()
+        if not token or len(token) > 4096:
+            return {"error": "A valid device token is required"}, HTTPStatus.BAD_REQUEST
+
+        now = datetime.datetime.now(datetime.UTC).isoformat()
+        db.device_tokens.update_one(
+            {"token": token},
+            {
+                "$set": {"userId": get_jwt_identity(), "updatedAt": now},
+                "$setOnInsert": {"createdAt": now}
+            },
+            upsert=True
+        )
+        return {"message": "Notification device registered"}, HTTPStatus.OK
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
+
+# Remove an FCM token when a user logs out of this device.
+@app.delete("/api/notifications/device-token")
+@jwt_required()
+def unregister_notification_device():
+    try:
+        data = request.get_json() or {}
+        token = data.get("token", "").strip()
+        if token:
+            db.device_tokens.delete_one({
+                "token": token,
+                "userId": get_jwt_identity()
+            })
+        return {"message": "Notification device removed"}, HTTPStatus.OK
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
+
+# Mark one of the authenticated user's notifications as read.
+@app.patch("/api/notifications/<notification_id>/read")
+@jwt_required()
+def mark_notification_read(notification_id):
+    try:
+        if not ObjectId.is_valid(notification_id):
+            return {"error": "Notification not found"}, HTTPStatus.NOT_FOUND
+
+        result = db.notifications.update_one(
+            {
+                "_id": ObjectId(notification_id),
+                "recipientUserId": get_jwt_identity()
+            },
+            {"$set": {
+                "isRead": True,
+                "readAt": datetime.datetime.now(datetime.UTC).isoformat()
+            }}
+        )
+        if not result.matched_count:
+            return {"error": "Notification not found"}, HTTPStatus.NOT_FOUND
+        return {"message": "Notification marked as read"}, HTTPStatus.OK
+    except Exception as e:
+        return {"error": str(e)}, HTTPStatus.BAD_REQUEST
+
+# Mark all of the authenticated user's notifications as read.
+@app.patch("/api/notifications/read-all")
+@jwt_required()
+def mark_all_notifications_read():
+    try:
+        db.notifications.update_many(
+            {"recipientUserId": get_jwt_identity(), "isRead": False},
+            {"$set": {
+                "isRead": True,
+                "readAt": datetime.datetime.now(datetime.UTC).isoformat()
+            }}
+        )
+        return {"message": "Notifications marked as read"}, HTTPStatus.OK
     except Exception as e:
         return {"error": str(e)}, HTTPStatus.BAD_REQUEST
 
